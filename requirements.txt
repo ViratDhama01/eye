@@ -1,0 +1,11 @@
+torch
+torchvision
+numpy
+pandas
+opencv-python
+scikit-learn
+Pillow
+ollama
+streamlit
+streamlit-lottie
+requests
