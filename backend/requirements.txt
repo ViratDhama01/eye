@@ -8,3 +8,6 @@ Pillow
 grad-cam
 ollama
 python-multipart
+pandas
+opencv-python-headless
+scikit-learn
