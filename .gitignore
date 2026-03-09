@@ -30,11 +30,11 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Data & Models
+# Data & Datasets
 data/
 datasets/
 models/
-*.pth
+test_backup/
 *.h5
 *.model
 *.tflite
@@ -54,6 +54,7 @@ models/
 *.mp4
 *.mkv
 *.avi
+OcuSight_AI_Backup_*
 
 # Flutter/Dart
 .dart_tool/

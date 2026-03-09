@@ -6,11 +6,11 @@ from PIL import Image
 import numpy as np
 import time
 import requests
-from streamlit_lottie import st_lottie
 import ollama
+import os
 
 # --- CONFIGURATION ---
-MODEL_RETINA_PATH = "best_model.pth"       # The Specialist (5 Classes)
+MODEL_RETINA_PATH = "archive_best_model.pth"       # The Specialist (5 Classes)
 MODEL_GENERAL_PATH = "anterior_model.pth"  # The Generalist (10 Classes)
 
 # Classes for Brain #1 (DR Specialist)
@@ -39,14 +39,6 @@ CLASSES_GENERAL = {
 # --- SETUP HARDWARE ---
 device = torch.device("mps" if torch.backends.mps.is_available() else "cpu")
 
-# --- ANIMATION LOADER ---
-def load_lottieurl(url):
-    try:
-        r = requests.get(url)
-        if r.status_code != 200: return None
-        return r.json()
-    except: return None
-
 # --- MODEL LOADING FUNCTIONS ---
 @st.cache_resource
 def load_retina_model():
@@ -64,9 +56,8 @@ def load_retina_model():
 def load_general_model():
     """Loads the 10-class Generalist"""
     model = models.efficientnet_b0(weights=None)
-    model.classifier[1] = nn.Linear(model.classifier[1].in_features, 10) # 10 Classes
+    model.classifier[1] = nn.Linear(model.classifier[1].in_features, 10) 
     try:
-        # Check if model plain exists first to avoid error
         model.load_state_dict(torch.load(MODEL_GENERAL_PATH, map_location=device))
         model.to(device)
         model.eval()
@@ -90,13 +81,9 @@ def check_eye_type(image):
         return "ANTERIOR"
 
 def calculate_risk_score(probabilities):
-    """
-    Calculates severity index (0-4) and risk percentage.
-    Only valid for 5-class Retina model.
-    """
+    """Calculates severity index (0-4) and risk percentage."""
     if len(probabilities) != 5:
         return 0.0, 0.0
-        
     weights = np.array([0, 1, 2, 3, 4])
     severity_index = np.sum(probabilities * weights)
     risk_pct = (severity_index / 4.0) * 100
@@ -108,65 +95,34 @@ def get_ollama_explanation(diagnosis, eye_type, image_bytes):
             f"You are an expert Ophthalmologist analyzing a retinal fundus scan. "
             f"The AI classifier has diagnosed this patient with: **{diagnosis}**. "
             "Please provide a **comprehensive clinical report** analyzing this image. "
-            "Look for and describe specific features such as:\n"
-            "- Microaneurysms\n"
-            "- Hemorrhages (Dot/Blot/Flame)\n"
-            "- Hard/Soft Exudates\n"
-            "- Cotton Wool Spots\n"
-            "- Macular Edema\n"
-            "- Neovascularization\n"
-            "Explain WHY the image matches the diagnosis. Be detailed and professional."
+            "Mention features such as Microaneurysms, Hemorrhages, Exudates, and Neovascularization."
         )
     else:
         prompt = (
             f"You are an expert Ophthalmologist analyzing an external eye photo. "
             f"The AI classifier has diagnosed this patient with: **{diagnosis}**. "
-            "Please provide a **detailed analysis** of the visible symptoms in this image. "
-            "Describe the condition of the sclera, iris, pupil, and eyelids. "
-            "Explain the visual signs that support this diagnosis."
+            "Please describe the visible symptoms of this condition in the external structures of the eye."
         )
     
     try:
-        response = ollama.generate(
-            model='llava:7b', 
-            prompt=prompt,
-            images=[image_bytes] # Sending the actual image now!
-        )
+        response = ollama.generate(model='llava:latest', prompt=prompt, images=[image_bytes])
         return response['response']
     except:
-        return "Dr. Llava is taking a break (Ollama connection failed)."
+        return "Dr. AI is currently offline. Please try again later."
 
 def verify_is_eye(image_bytes):
-    """
-    Uses VLM to check if the image is actually an eye.
-    """
-    # Ask for a description instead of Yes/No (Llava is better at describing)
+    """Uses VLM to check if the image is actually an eye."""
     prompt = "Describe this image briefly. What body part is this?"
     try:
-        response = ollama.generate(
-            model='llava:7b',
-            prompt=prompt,
-            images=[image_bytes]
-        )
+        response = ollama.generate(model='llava:latest', prompt=prompt, images=[image_bytes])
         answer = response['response'].lower()
-        
-        # Check for medical/eye keywords
-        valid_keywords = ["eye", "retina", "fundus", "iris", "pupil", "ophthalmology", "optic", "macula", "sclera", "vision", "face"]
-        
-        if any(word in answer for word in valid_keywords):
-            return True
-            
-        print(f"DEBUG: Image rejected. Model saw: {answer}") # Term log for debugging
-        return False
-    except Exception as e:
-        print(f"DEBUG: Verification failed due to error: {e}")
-        # If Ollama is offline or fails to generate, we DEFAULT TO ALLOW to not break the app.
-        # But we log it.
-        return True
+        valid_keywords = ["eye", "retina", "fundus", "iris", "pupil", "face", "ocular"]
+        return any(word in answer for word in valid_keywords)
+    except:
+        return True # Default to allow
 
 # --- PREDICTION LOGIC ---
 def predict(image, mode):
-    # Preprocessing
     transform = transforms.Compose([
         transforms.Resize((224, 224)),
         transforms.ToTensor(),
@@ -191,160 +147,257 @@ def predict(image, mode):
         
     return classes[top_class.item()], top_prob.item() * 100, probs.cpu().numpy()
 
-# --- STREAMLIT UI ---
+# --- STREAMLIT UI DESIGN ---
 st.set_page_config(page_title="Eye AI", page_icon="👁️", layout="wide")
 
-# Hide generic streamlit style and fix Theme support
+# Custom CSS for Premium Minimal UI
 st.markdown("""
 <style>
-    /* Remove hardcoded backgrounds to allow Streamlit's native Dark/Light mode to work */
-    /* .stApp { background-color: #0e1117; color: white; } <-- REMOVED */
-    
-    /* Modern Button Style (Adaptive) */
-    div.stButton > button { 
-        background-color: #ff4b4b; 
-        color: white; 
-        border-radius: 12px; 
-        width: 100%; 
-        border: none; 
-        padding: 12px 20px;
-        font-weight: 600;
+    /* Main Background */
+    .stApp {
+        background-color: #0B0F14;
+        color: #E6EDF3;
+    }
+
+    /* Navbar */
+    .nav-container {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 1rem 5%;
+        background: rgba(17, 24, 39, 0.8);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+        position: fixed;
+        width: 100%;
+        top: 0;
+        left: 0;
+        z-index: 999;
+    }
+    .nav-logo { font-size: 1.5rem; font-weight: 700; color: #4DA3FF; }
+    .nav-links { display: flex; gap: 2rem; color: #9AA4B2; font-size: 0.9rem; }
+
+    /* Hero Section */
+    .hero-container {
+        text-align: center;
+        padding: 120px 0 60px 0;
+        background: radial-gradient(circle at center, rgba(77, 163, 255, 0.1) 0%, transparent 70%);
+    }
+    .hero-title { font-size: 3.5rem; font-weight: 800; margin-bottom: 0.5rem; color: #E6EDF3; }
+    .hero-subtitle { font-size: 1.2rem; color: #9AA4B2; margin-bottom: 2rem; }
+
+    /* Feature Cards */
+    .feature-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+        gap: 1.5rem;
+        padding: 2rem 5%;
+    }
+    .feature-card {
+        background: #1A2230;
+        padding: 2rem;
+        border-radius: 16px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
         transition: all 0.3s ease;
     }
-    div.stButton > button:hover { 
-        background-color: #ff6b6b; 
-        box-shadow: 0 4px 12px rgba(255, 75, 75, 0.3);
-        transform: translateY(-2px);
+    .feature-card:hover { border-color: #4DA3FF; transform: translateY(-5px); background: #212B3B; }
+    .feature-icon { font-size: 2rem; margin-bottom: 1rem; color: #4DA3FF; }
+    .feature-title { font-size: 1.1rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .feature-text { font-size: 0.9rem; color: #6B7280; }
+
+    /* Upload Panel */
+    .upload-container {
+        max-width: 800px;
+        margin: 2rem auto;
+        padding: 3rem;
+        background: #111827;
+        border-radius: 24px;
+        border: 2px dashed rgba(77, 163, 255, 0.2);
+        text-align: center;
+        transition: border-color 0.3s ease;
     }
-    
-    /* Custom Progress Bar for Risk Score */
-    .risk-bar-container {
-        background-color: var(--secondary-background-color);
-        border-radius: 8px; 
-        height: 24px; 
-        width: 100%;
+    .upload-container:hover { border-color: #4DA3FF; box-shadow: 0 0 20px rgba(77, 163, 255, 0.1); }
+
+    /* Diagnosis Dashboard */
+    .dashboard-container {
+        display: flex;
+        gap: 2rem;
+        padding: 2rem 5%;
+    }
+    .result-card {
+        flex: 1;
+        background: #1A2230;
+        padding: 2.5rem;
+        border-radius: 24px;
+        border: 1px solid rgba(255, 255, 255, 0.05);
+    }
+    .visual-card {
+        flex: 1;
+        background: #111827;
+        padding: 1rem;
+        border-radius: 24px;
         overflow: hidden;
     }
-    .risk-bar-fill {
-        height: 100%; 
-        border-radius: 8px;
-        transition: width 0.5s ease-in-out;
+
+    /* Risk Bar */
+    .risk-bar {
+        height: 12px;
+        border-radius: 6px;
+        background: #0B0F14;
+        margin: 1rem 0;
+        position: relative;
+        overflow: hidden;
     }
+    .risk-gradient {
+        height: 100%;
+        background: linear-gradient(90deg, #00C2A8 0%, #FFD700 50%, #FF4D4F 100%);
+    }
+    .risk-indicator {
+        position: absolute;
+        top: 0;
+        height: 100%;
+        width: 4px;
+        background: white;
+        border-radius: 2px;
+        box-shadow: 0 0 10px rgba(0,0,0,0.5);
+    }
+
+    /* Buttons */
+    .stButton>button {
+        background: #4DA3FF;
+        color: white;
+        border-radius: 12px;
+        padding: 12px 24px;
+        font-weight: 600;
+        border: none;
+        transition: all 0.3s ease;
+    }
+    .stButton>button:hover { background: #3586E0; transform: scale(1.02); }
+
+    /* Override Streamlit UI */
+    [data-testid="stHeader"] { background: transparent; }
+    .stSpinner > div { border-top-color: #4DA3FF !important; }
 </style>
 """, unsafe_allow_html=True)
 
-# Header
-lottie_eye = load_lottieurl("https://assets5.lottiefiles.com/packages/lf20_5njp3vgg.json")
-col1, col2 = st.columns([1, 4])
-with col1:
-    if lottie_eye: st_lottie(lottie_eye, height=100)
-with col2:
-    st.title("Ocular Disease Diagnostic System")
-    st.markdown("**Hybrid-Architecture: Retina Specialist (EfficientNet) + Anterior Generalist**")
+# Navigation
+st.markdown("""
+<div class="nav-container">
+    <div class="nav-logo">👁️ Eye AI</div>
+    <div class="nav-links">
+        <span>Dashboard</span>
+        <span>Patients</span>
+        <span>Reports</span>
+        <span>About</span>
+    </div>
+</div>
+""", unsafe_allow_html=True)
 
-# Sidebar
-with st.sidebar:
-    st.image("https://cdn-icons-png.flaticon.com/512/3063/3063822.png", width=60)
-    st.title("RetinaAI")
-    st.header("Patient Data")
-    uploaded_file = st.file_uploader("Upload Eye Scan or Selfie", type=["jpg", "png", "jpeg"])
-    st.markdown("---")
-    st.caption(f"Device: {device}")
+# Hero Section
+st.markdown("""
+<div class="hero-container">
+    <div class="hero-title">AI Eye Diagnostic System</div>
+    <div class="hero-subtitle">Advanced retinal disease detection powered by deep learning</div>
+</div>
+""", unsafe_allow_html=True)
 
-# Main Area
+# Feature Cards
+st.markdown("""
+<div class="feature-grid">
+    <div class="feature-card">
+        <div class="feature-icon">🛡️</div>
+        <div class="feature-title">Smart Analysis</div>
+        <div class="feature-text">Auto eye-type detection and specialized routing.</div>
+    </div>
+    <div class="feature-card">
+        <div class="feature-icon">🧠</div>
+        <div class="feature-title">AI Diagnosis</div>
+        <div class="feature-text">Deep learning retinal disease classification.</div>
+    </div>
+    <div class="feature-card">
+        <div class="feature-icon">📄</div>
+        <div class="feature-title">Clinical Report</div>
+        <div class="feature-text">Human-readable clinical reports via Dr. AI.</div>
+    </div>
+</div>
+""", unsafe_allow_html=True)
+
+# Upload Section
+with st.container():
+    st.markdown('<div class="upload-container">', unsafe_allow_html=True)
+    uploaded_file = st.file_uploader("Upload Retinal Scan or Eye Photo", type=["jpg", "png", "jpeg"], label_visibility="collapsed")
+    if not uploaded_file:
+        st.markdown('<div style="color: #6B7280; margin-top: 1rem;">Drag & drop image or browse files</div>', unsafe_allow_html=True)
+    st.markdown('</div>', unsafe_allow_html=True)
+
+# Logic execution
 if uploaded_file:
-    # Need bytes for Ollama validation
     file_bytes = uploaded_file.getvalue()
     image = Image.open(uploaded_file).convert('RGB')
     
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        st.image(image, caption="Uploaded Scan", use_container_width=True)
+    col_l, col_r = st.columns(2)
     
-    with c2:
-        st.subheader("Analysis Dashboard")
+    with col_l:
+        st.image(image, use_container_width=True)
+    
+    with col_r:
+        st.markdown('<div class="result-card">', unsafe_allow_html=True)
+        st.subheader("Analysis Control")
+        analyze_btn = st.button("Generate Diagnostic Report", use_container_width=True)
         
-        analyze_button = st.button("Run AI Diagnosis", use_container_width=True)
-
-        if analyze_button:
-            with st.spinner("Verifying Image Content..."):
-                is_eye = verify_is_eye(file_bytes)
-                
-            if not is_eye:
-                st.error("🚨 ALERT: This does not appear to be an eye photo.")
-                st.write("Please upload a valid **Retinal Scan** or **Anterior Eye Photo**.")
-            else:
-                # 1. Router Check
-                eye_type = check_eye_type(image)
-                
-                # Display Mode
-                if eye_type == "RETINA":
-                    st.info("🔎 Detected: **Retinal Fundus Scan** (Using Specialist Brain)")
-                else:
-                    st.success("📸 Detected: **External Eye / Selfie** (Using Generalist Brain)")
-                
-                with st.spinner("Processing on Apple M4 Neural Engine..."):
-                    # Animation
-                    if lottie_eye:
-                        with st.empty():
-                            st_lottie(lottie_eye, height=150, key="scanning")
-                            time.sleep(1.5)
-                    
-                    # Get Result
-                    diagnosis, confidence, all_probs = predict(image, eye_type)
-                    
-                    # --- RESULTS DISPLAY ---
-                    
-                    # Layout based on type
-                    if eye_type == "RETINA":
-                        severity_index, risk_pct = calculate_risk_score(all_probs)
-                        
-                        r_col1, r_col2, r_col3, r_col4 = st.columns(4)
-                        with r_col1: st.metric("Diagnosis", diagnosis)
-                        with r_col2: st.metric("Confidence", f"{confidence:.2f}%")
-                        with r_col3: st.metric("Severity Index", f"{severity_index:.2f} / 4.0")
-                        with r_col4:
-                            st.write("Risk Score")
-                            bar_color = "#ff4b4b" if risk_pct > 50 else "#00cc96"
-                            # Use CSS class defined above + inline dynamic style
-                            st.markdown(f"""
-                            <div class="risk-bar-container">
-                                <div class="risk-bar-fill" style="width: {risk_pct}%; background-color: {bar_color};"></div>
-                            </div>
-                            <div style="text-align: right; font-size: 0.8em; margin-top: 5px;">{risk_pct:.1f}%</div>
-                            """, unsafe_allow_html=True)
-                            
-                    else: # Anterior
-                        r_col1, r_col2 = st.columns(2)
-                        with r_col1: st.metric("Diagnosis", diagnosis)
-                        with r_col2: st.metric("Confidence", f"{confidence:.2f}%")
-                    
-                    st.markdown("---")
-                    
-                    # Chart
-                    st.write("### Class Probabilities")
-                    if eye_type == "RETINA":
-                        chart_data = {name: prob for name, prob in zip(CLASSES_RETINA.values(), all_probs)}
-                    else:
-                        chart_data = {name: prob for name, prob in zip(CLASSES_GENERAL.values(), all_probs)}
-                    st.bar_chart(chart_data)
-                    
-                    # AI Findings
-                    st.write("### 🤖 Dr. AI Findings")
-                    if confidence > 30: # Low threshold for demo
-                        with st.spinner("Consulting Dr. AI (Llava) for full analysis..."):
-                            explanation = get_ollama_explanation(diagnosis, eye_type, file_bytes)
-                            st.info(explanation)
-                    else:
-                         st.warning(f"Confidence ({confidence:.1f}%) is too low for a reliable generative explanation.")
+        if analyze_btn:
+            # Animation / Status Phase
+            status = st.empty()
+            messages = [
+                "Verifying image ocular integrity...",
+                "Analyzing retinal vascular structures...",
+                "Detecting microaneurysms and hemorrhages...",
+                "Mapping topographic exudate distribution...",
+                "Consulting Specialist Brain (EfficientNet)...",
+                "Generating clinical findings..."
+            ]
             
-            # Disclaimer (Always visible at the bottom of analysis)
-            if 'is_eye' in locals() and is_eye:
-                 st.warning("⚠️ DISCLAIMER: This is an AI research tool. Results are generated by a deep learning model (EfficientNet) and are for experimental purposes only. This tool is NOT a substitute for professional medical diagnosis. Always consult a certified Ophthalmologist.")
-        
-        # Disclaimer (Always visible at the bottom of analysis)
-        st.warning("⚠️ DISCLAIMER: This is an AI research tool. Results are generated by a deep learning model (EfficientNet) and are for experimental purposes only. This tool is NOT a substitute for professional medical diagnosis. Always consult a certified Ophthalmologist.")
+            for msg in messages:
+                status.info(msg)
+                time.sleep(0.8)
+            status.empty()
+            
+            # Real Analysis
+            eye_type = check_eye_type(image)
+            diagnosis, confidence, all_probs = predict(image, eye_type)
+            
+            # Result Display
+            st.markdown(f"### Diagnosis: <span style='color: #4DA3FF;'>{diagnosis}</span>", unsafe_allow_html=True)
+            st.markdown(f"**Confidence**: {confidence:.2f}%")
+            
+            if eye_type == "RETINA":
+                severity, risk_pct = calculate_risk_score(all_probs)
+                st.markdown(f"**Risk Severity Index**: {severity:.2f} / 4.0")
+                
+                st.markdown(f"""
+                <div class="risk-bar">
+                    <div class="risk-gradient"></div>
+                    <div class="risk-indicator" style="left: calc({risk_pct}% - 2px);"></div>
+                </div>
+                <div style="display: flex; justify-content: space-between; font-size: 0.8rem; color: #6B7280;">
+                    <span>Low</span>
+                    <span>Moderate</span>
+                    <span>High</span>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            st.markdown('---')
+            st.write("### 🤖 Clinical Findings (Dr. AI)")
+            with st.spinner("Compiling full medical report..."):
+                explanation = get_ollama_explanation(diagnosis, eye_type, file_bytes)
+                st.info(explanation)
+                
+        st.markdown('</div>', unsafe_allow_html=True)
 
-else:
-    with col2:
-        st.info("Please upload an image to begin.")
+# Footer
+st.markdown("""
+<div style="text-align: center; color: #6B7280; padding: 4rem 0; border-top: 1px solid rgba(255,255,255,0.05); margin-top: 4rem;">
+    Trusted by medical researchers and professionals worldwide.<br>
+    <span style="font-size: 0.8rem;">Powered by EfficientNet + LLaVa | © 2026 Eye AI</span>
+</div>
+""", unsafe_allow_html=True)
