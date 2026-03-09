@@ -5,6 +5,6 @@ torch
 torchvision
 numpy
 Pillow
-pytorch-grad-cam
+grad-cam
 ollama
 python-multipart
