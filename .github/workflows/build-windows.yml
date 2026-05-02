@@ -1,0 +1,68 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Python dependencies
+        run: |
+          cd backend
+          pip install -r requirements.txt
+          pip install pyinstaller
+          pip install sqlmodel
+
+      - name: Freeze Python backend
+        run: |
+          cd backend
+          pyinstaller --clean --noconfirm ocusight.spec
+
+      - name: Move frozen backend
+        run: |
+          if (Test-Path backend-dist) { Remove-Item -Recurse -Force backend-dist }
+          Move-Item backend/dist/ocusight-backend backend-dist
+        shell: powershell
+
+      - name: Build React frontend
+        run: |
+          cd frontend
+          npm ci
+          npm run build
+
+      - name: Install Electron dependencies
+        run: |
+          cd desktop
+          npm install
+
+      - name: Build Windows installer
+        run: |
+          cd desktop
+          npx electron-builder --win --x64
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Windows EXE
+        uses: actions/upload-artifact@v4
+        with:
+          name: OcuSight-AI-Windows
+          path: dist-electron/*.exe
+          retention-days: 30

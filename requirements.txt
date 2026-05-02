@@ -9,3 +9,4 @@ ollama
 streamlit
 streamlit-lottie
 requests
+pillow-heif

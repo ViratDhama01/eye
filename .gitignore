@@ -75,3 +75,8 @@ build/
 # OS
 Thumbs.db
 db.sqlite3
+
+# Desktop build artifacts
+backend-dist/
+dist-electron/
+desktop/node_modules/

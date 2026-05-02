@@ -40,15 +40,17 @@ const Scanner = ({ onResult }) => {
                 }
             }, 1000);
 
-            const response = await axios.post('http://localhost:8000/predict', formData);
+            const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+            const response = await axios.post(`${backendUrl}/predict`, formData);
 
             clearInterval(interval);
             setStage('done');
             setTimeout(() => onResult(response.data, selectedFile), 500);
         } catch (error) {
-            console.error(error);
+            console.error("Scanner Error:", error);
             setStage('idle');
-            alert("Analysis failed. Please check backend connection.");
+            const errorMsg = error.response?.data?.detail || error.message || "Please check backend connection.";
+            alert(`Analysis failed: ${errorMsg}`);
         }
     };
 

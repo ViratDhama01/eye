@@ -1414,3 +1414,31 @@ body {
     grid-template-columns: 1fr 1fr;
   }
 }
+
+/* ===== MEDICAL REPORT GRID ===== */
+.medical-report-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.report-section {
+  background: rgba(11, 15, 20, 0.4);
+  border: 1px solid rgba(255, 255, 255, 0.05);
+  border-radius: 12px;
+  padding: 20px;
+}
+
+.highlight-section {
+  background: rgba(77, 163, 255, 0.05);
+  border-color: rgba(77, 163, 255, 0.2);
+}
+
+.report-section h4 {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}

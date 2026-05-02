@@ -1,4 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
+import html2pdf from 'html2pdf.js';
+import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
+import { Sparkles, CheckCircle2, Upload } from 'lucide-react';
 import './index.css';
 
 /* ====== SVG ICONS ====== */
@@ -53,7 +56,7 @@ const CloseIcon = () => (
   </svg>
 );
 
-const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+const BACKEND = import.meta.env.VITE_BACKEND_URL || 'http://127.0.0.1:8000';
 
 function App() {
   const [page, setPage] = useState('home');
@@ -72,6 +75,76 @@ function App() {
   const fileRef = useRef(null);
   const reportRef = useRef(null);
   const diagRef = useRef(null);
+
+  // Patient DB State
+  const [dbPatients, setDbPatients] = useState([]);
+  const [dbScans, setDbScans] = useState([]);
+  const [savingPatient, setSavingPatient] = useState(false);
+  const [patientNameInput, setPatientNameInput] = useState('');
+  const [patientAgeInput, setPatientAgeInput] = useState('');
+  const [showSaveModal, setShowSaveModal] = useState(false);
+
+  useEffect(() => {
+    if (page === 'patients') {
+      fetchPatients();
+    }
+  }, [page]);
+
+  const fetchPatients = async () => {
+    try {
+      const res = await fetch(`${BACKEND}/patients/`);
+      const data = await res.json();
+      setDbPatients(data);
+      if (data.length > 0) {
+        fetchScans(data[0].id);
+      }
+    } catch (err) { console.error("Failed to load patients", err); }
+  };
+
+  const fetchScans = async (patientId) => {
+    try {
+      const res = await fetch(`${BACKEND}/patients/${patientId}`);
+      const data = await res.json();
+      setDbScans(data.scans || []);
+    } catch (err) { console.error("Failed to load scans", err); }
+  };
+
+  const handleSaveToPatient = async () => {
+    if (!result || !patientNameInput || !patientAgeInput) {
+      showToast('⚠️ Please enter patient name and age.');
+      return;
+    }
+    setSavingPatient(true);
+    try {
+      // Create Patient
+      const pRes = await fetch(`${BACKEND}/patients/`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: patientNameInput, age: parseInt(patientAgeInput) })
+      });
+      const pData = await pRes.json();
+
+      // Save Scan
+      const sRes = await fetch(`${BACKEND}/patients/${pData.id}/scans`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          eye_type: result.eye_type,
+          diagnosis: result.diagnosis,
+          confidence: result.confidence,
+          risk_score: getRiskPercent()
+        })
+      });
+
+      showToast(`✅ Saved to Patient: ${pData.name}`);
+      setShowSaveModal(false);
+      setPatientNameInput('');
+      setPatientAgeInput('');
+    } catch (err) {
+      showToast('❌ Failed to save patient data.');
+    }
+    setSavingPatient(false);
+  };
 
   const showToast = (msg, dur = 3500) => {
     setToast(msg);
@@ -134,15 +207,21 @@ function App() {
     try {
       const formData = new FormData();
       formData.append('file', selectedFile);
-      const res = await fetch(`${BACKEND}/predict`, { method: 'POST', body: formData });
+      const backendUrl = import.meta.env.VITE_BACKEND_URL || 'http://localhost:8000';
+      const res = await fetch(`${backendUrl}/predict`, { method: 'POST', body: formData });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData.detail || `HTTP error! status: ${res.status}`);
+      }
       const data = await res.json();
-      clearInterval(interval);
+      clearInterval(interval); // Clear interval on success
       setResult(data);
       setReport('');
       setImageView('heatmap');
     } catch (err) {
       clearInterval(interval);
-      alert('Backend not responding. Ensure FastAPI is running on port 8000.');
+      console.error("Analysis Error:", err);
+      alert(`Analysis failed: ${err.message || 'Please check backend connection and ensure FastAPI is running on port 8000.'}`);
     }
     setProcessing(false);
   };
@@ -160,8 +239,24 @@ function App() {
         { method: 'POST', body: formData }
       );
       const data = await res.json();
-      setReport(data.report || 'No report generated.');
+
+      let finalReport = data.report || 'No report generated.';
+
+      // Secondary robustness check for JSON trapped in string
+      if (typeof finalReport === 'string' && finalReport.includes('{') && finalReport.includes('}')) {
+        try {
+          const startIdx = finalReport.indexOf('{');
+          const endIdx = finalReport.lastIndexOf('}');
+          const extracted = JSON.parse(finalReport.substring(startIdx, endIdx + 1));
+          finalReport = extracted;
+        } catch (e) {
+          console.warn("Failed to parse embedded JSON in report string", e);
+        }
+      }
+
+      setReport(finalReport);
     } catch (err) {
+      console.error("Report Generation Error:", err);
       setReport('Failed to connect to Dr. AI. Ensure Ollama is running.');
     }
     setReportLoading(false);
@@ -169,34 +264,153 @@ function App() {
 
   const downloadPDF = () => {
     if (!result) return;
-    const content = `
-AI EYE DIAGNOSTIC SYSTEM — CLINICAL REPORT
-============================================
-Date: ${new Date().toLocaleString()}
+    showToast('⌛ Preparing Clinical Report PDF...');
 
-DIAGNOSIS: ${result.diagnosis}
-Confidence: ${result.confidence}%
-Eye Type: ${result.eye_type}
-Severity: ${getSeverity().stage}
-Risk Score: ${getRiskPercent()}%
+    // Get current probabilities for the chart
+    const labels = result.eye_type === 'RETINA'
+      ? ['No DR', 'Mild', 'Moderate', 'Severe', 'Prolif']
+      : ['CSC', 'DR', 'Edema', 'Glaucoma', 'Healthy', 'Scar', 'Myopia', 'Pterygium', 'Detached', 'RP'];
 
-CLINICAL REPORT:
-${report || 'Report not yet generated.'}
+    const probs = result.probabilities || [];
 
----
-Disclaimer: This is an AI-assisted screening tool for research purposes only.
-Not a substitute for professional medical diagnosis.
-Generated by OcuSight AI — Virat Dhama
-    `.trim();
+    // Create elements for probability bars
+    const chartHtml = probs.map((p, i) => `
+      <div style="margin-bottom: 8px;">
+        <div style="display: flex; justify-content: space-between; font-size: 10px; margin-bottom: 2px;">
+          <span>${labels[i] || `Class ${i}`}</span>
+          <span>${(p * 100).toFixed(1)}%</span>
+        </div>
+        <div style="background: #E5E7EB; height: 6px; border-radius: 3px; overflow: hidden;">
+          <div style="background: ${i === result.probabilities.indexOf(Math.max(...result.probabilities)) ? '#4DA3FF' : '#9CA3AF'}; width: ${p * 100}%; height: 100%;"></div>
+        </div>
+      </div>
+    `).join('');
 
-    const blob = new Blob([content], { type: 'text/plain' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `eye_ai_report_${Date.now()}.txt`;
-    a.click();
-    URL.revokeObjectURL(url);
-    showToast('📄 Report downloaded successfully');
+    const element = document.createElement('div');
+    element.innerHTML = `
+      <div style="font-family: 'Inter', Arial, sans-serif; padding: 40px; color: #111827; background: white; min-height: 1050px; position: relative; box-sizing: border-box;">
+        <!-- Letterhead Header -->
+        <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px;">
+          <div style="display: flex; align-items: center; gap: 10px;">
+            <div style="width: 40px; height: 40px; background: #4DA3FF; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: white; font-weight: bold; font-size: 20px;">👁️</div>
+            <div style="font-size: 24px; font-weight: 800; color: #1A2230;">OcuSight AI</div>
+          </div>
+          <div style="text-align: right; color: #6B7280; font-size: 11px;">
+            Clinical Diagnostics Division<br/>
+            Ref ID: ${Math.random().toString(36).substr(2, 9).toUpperCase()}<br/>
+            ${new Date().toLocaleDateString()}
+          </div>
+        </div>
+        <div style="height: 3px; background: linear-gradient(90deg, #4DA3FF, #00C2A8, #FFD700, #FF4D4F); margin-bottom: 30px;"></div>
+        
+        <div style="text-align: center; margin-bottom: 40px;">
+          <h1 style="color: #1A2230; margin: 0; font-size: 28px; letter-spacing: -0.5px;">CLINICAL ASSESSMENT REPORT</h1>
+          <p style="color: #6B7280; font-size: 14px; margin-top: 8px;">Automated Deep Learning Analysis Findings</p>
+        </div>
+        
+        <div style="display: flex; gap: 30px; margin-bottom: 30px; page-break-inside: avoid;">
+          <div style="flex: 1.2; background: #F8FAFC; padding: 25px; border-radius: 16px; border: 1px solid #E2E8F0;">
+            <h3 style="color: #4DA3FF; margin-top: 0; margin-bottom: 20px; border-bottom: 2px solid #4DA3FF; padding-bottom: 10px; font-size: 18px;">Automated Findings</h3>
+            <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
+              <tr style="border-bottom: 1px solid #E2E8F0;"><td style="padding: 10px 0; font-weight: 600;">Primary Diagnosis:</td><td style="padding: 10px 0; text-align: right; color: #1A2230;">${result.diagnosis}</td></tr>
+              <tr style="border-bottom: 1px solid #E2E8F0;"><td style="padding: 10px 0; font-weight: 600;">Detection Confidence:</td><td style="padding: 10px 0; text-align: right; color: #1A2230;">${result.confidence}%</td></tr>
+              <tr style="border-bottom: 1px solid #E2E8F0;"><td style="padding: 10px 0; font-weight: 600;">Imaging Category:</td><td style="padding: 10px 0; text-align: right; color: #1A2230;">${result.eye_type}</td></tr>
+              <tr style="border-bottom: 1px solid #E2E8F0;"><td style="padding: 10px 0; font-weight: 600;">Risk Severity Index:</td><td style="padding: 10px 0; text-align: right; font-weight: 700; color: ${getSeverity().color};">${getSeverity().stage} (${getRiskPercent()}%)</td></tr>
+            </table>
+            
+            <div style="margin-top: 25px;">
+              <h4 style="font-size: 13px; color: #64748B; text-transform: uppercase; margin-bottom: 15px;">Probability Distribution (AI Insights)</h4>
+              ${chartHtml}
+            </div>
+          </div>
+          
+          <div style="flex: 0.8; text-align: center;">
+            <div style="background: #F1F5F9; border-radius: 16px; padding: 10px; border: 1px solid #E2E8F0; margin-bottom: 15px;">
+              <img src="${getImageSrc()}" style="width: 100%; border-radius: 10px; display: block;" />
+            </div>
+            <p style="font-size: 11px; color: #94A3B8; font-style: italic;">Captured Reference: ${imageView.toUpperCase()} VIEW</p>
+          </div>
+        </div>
+
+        <div>
+          <h3 style="color: #1A2230; margin-bottom: 20px; border-bottom: 2px solid #1A2230; padding-bottom: 10px; font-size: 18px;">Expert AI Commentary</h3>
+          <div style="font-size: 14px; line-height: 1.7; color: #334155;">
+            ${!report ? '<div style="background: #FFFBEB; border: 1px solid #FEF3C7; padding: 15px; border-radius: 8px; color: #92400E;">Detailed clinical commentary unavailable for this session. Recommended to regenerate.</div>' :
+        typeof report === 'string' ? `
+              <div style="background: #F8FAFC; padding: 20px; border-radius: 12px; border-left: 4px solid #1A2230;">
+                ${report.split('\n').filter(line => line.trim()).map(line => `<p style="margin-bottom: 10px;">${line}</p>`).join('')}
+              </div>` :
+          `
+              <div style="margin-bottom: 25px; page-break-inside: avoid;">
+                <div style="color: #4DA3FF; font-weight: 800; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; margin-bottom: 8px;">Section I: Clinical Summary</div>
+                <div style="padding: 15px; border-left: 4px solid #4DA3FF; background: #F0F9FF; border-radius: 0 8px 8px 0; font-weight: 500;">${report.summary}</div>
+              </div>
+
+              <div style="margin-bottom: 25px; page-break-inside: avoid;">
+                <div style="color: #00C2A8; font-weight: 800; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; margin-bottom: 12px;">Section II: Identified Biomarkers & Features</div>
+                  <div style="display: block;">
+                  ${(report.features || []).map(f => {
+            const p = f.split(': ');
+            return `<div style="padding: 12px 15px; margin-bottom: 8px; background: #F0FDFA; border-radius: 8px; border: 1px solid #CCFBF1; display: flex; gap: 10px;">
+                        <span style="color: #00C2A8;">•</span>
+                        <div>${p.length > 1 ? `<strong>${p[0]}</strong>: ${p.slice(1).join(': ')}` : f}</div>
+                      </div>`;
+          }).join('')}
+                </div>
+              </div>
+
+              <div style="margin-bottom: 25px; page-break-inside: avoid;">
+                <div style="color: #F59E0B; font-weight: 800; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; margin-bottom: 8px;">Section III: Quantitative Risk Assessment</div>
+                <div style="padding: 15px; border-left: 4px solid #F59E0B; background: #FFFBEB; border-radius: 0 8px 8px 0;">${report.risk_assessment}</div>
+              </div>
+
+              <div style="margin-bottom: 25px; page-break-inside: avoid;">
+                <div style="color: #3B82F6; font-weight: 800; text-transform: uppercase; font-size: 11px; letter-spacing: 0.5px; margin-bottom: 12px;">Section IV: Required Clinical Actions</div>
+                <div style="display: block;">
+                  ${(report.recommended_action || []).map(a => {
+            const p = a.split(': ');
+            return `<div style="padding: 12px 15px; margin-bottom: 8px; background: #EFF6FF; border-radius: 8px; border: 1px solid #DBEAFE; display: flex; gap: 10px;">
+                        <span style="color: #3B82F6;">•</span>
+                        <div>${p.length > 1 ? `<strong>${p[0]}</strong>: ${p.slice(1).join(': ')}` : a}</div>
+                      </div>`;
+          }).join('')}
+                </div>
+              </div>
+              `
+      }
+          </div>
+        </div>
+        
+        <!-- Letterhead Footer -->
+        <div style="position: absolute; bottom: 40px; left: 40px; width: calc(100% - 80px);">
+          <div style="height: 1px; background: #E2E8F0; margin-bottom: 15px;"></div>
+          <div style="display: flex; justify-content: space-between; font-size: 10px; color: #94A3B8; font-weight: 500;">
+             <span>⚠️ RESEARCH PROTOTYPE — NOT FOR CLINICAL USE</span>
+             <span>OcuSight AI Intelligence Platform · v2.4</span>
+             <span>Ref: ${new Date().getTime()}</span>
+          </div>
+        </div>
+      </div>
+    `;
+
+    const safePName = patientNameInput ? patientNameInput.replace(/[^a-z0-9]/gi, '_') : 'Scan';
+    const filename = `OcuSight_${safePName}_Clinical_Report_${Date.now()}.pdf`;
+
+    const opt = {
+      margin: 0,
+      filename: filename,
+      image: { type: 'jpeg', quality: 0.98 },
+      html2canvas: { scale: 2, useCORS: true, logging: false, letterRendering: true },
+      jsPDF: { unit: 'in', format: 'letter', orientation: 'portrait' },
+      pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
+    };
+
+    html2pdf().set(opt).from(element).save().then(() => {
+      showToast('✅ Report downloaded successfully');
+    }).catch(err => {
+      console.error("PDF Export Error:", err);
+      showToast('❌ Export failed. Please try again.');
+    });
   };
 
   const getSeverity = () => {
@@ -221,7 +435,9 @@ Generated by OcuSight AI — Virat Dhama
   const getImageSrc = () => {
     if (!result) return '';
     if (imageView === 'original') return previewUrl;
-    return result.heatmap;
+    if (imageView === 'heatmap') return result.heatmap;
+    if (imageView === 'overlay') return result.overlay;
+    return previewUrl;
   };
 
   /* ====================================================== */
@@ -367,9 +583,12 @@ Generated by OcuSight AI — Virat Dhama
                       {reportLoading ? (<><span className="btn-spinner" /> Generating Report...</>) : (<>Generate Full Report <ArrowRight /></>)}
                     </button>
                   </div>
-                  <div className="report-btn-wrap" style={{ marginTop: 8 }}>
-                    <button className="download-btn" onClick={downloadPDF}>
+                  <div className="report-btn-wrap" style={{ marginTop: 8, display: 'flex', gap: '10px' }}>
+                    <button className="download-btn" onClick={downloadPDF} style={{ flex: 1 }}>
                       <DownloadIcon /> Download Report
+                    </button>
+                    <button className="download-btn" onClick={() => setShowSaveModal(true)} style={{ flex: 1, borderColor: '#00C2A8', color: '#00C2A8' }}>
+                      💾 Save to DB
                     </button>
                   </div>
                 </div>
@@ -434,7 +653,80 @@ Generated by OcuSight AI — Virat Dhama
                       </div>
                     </div>
                   ) : (
-                    <p>{report}</p>
+                    <div className="structured-report">
+                      {typeof report === 'string' ? (
+                        <div style={{ background: '#111827', padding: '2rem', borderRadius: '24px', border: '1px solid rgba(255,255,255,0.05)', color: '#E6EDF3' }}>
+                          <h4 style={{ color: '#4DA3FF', marginBottom: '1.5rem', display: 'flex', alignItems: 'center', gap: '0.75rem', fontSize: '1.25rem' }}>
+                             <Sparkles className="w-5 h-5" /> Clinical Commentary
+                          </h4>
+                          <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                             {report.split('\n').filter(line => line.trim()).map((line, i) => (
+                               <div key={i} style={{ display: 'flex', gap: '1rem', background: 'rgba(255,255,255,0.02)', padding: '1rem', borderRadius: '12px', border: '1px solid rgba(255,255,255,0.03)' }}>
+                                 <span style={{ color: '#4DA3FF', fontWeight: 'bold' }}>•</span>
+                                 <span style={{ lineHeight: '1.6' }}>{line.replace(/^[-*•]\s*/, '').replace(/^JSON:?\s*/i, '')}</span>
+                               </div>
+                             ))}
+                          </div>
+                        </div>
+                      ) : (
+                        <div style={{ background: '#0B0F14', borderRadius: '24px', overflow: 'hidden', border: '1px solid rgba(255,255,255,0.05)', boxShadow: '0 25px 50px -12px rgba(0,0,0,0.5)' }}>
+                          <div style={{ height: '4px', background: 'linear-gradient(90deg, #4DA3FF, #00C2A8, #FFD700, #FF4D4F)' }} />
+                          <div style={{ padding: '2.5rem' }}>
+                            <div className="medical-report-grid" style={{ display: 'grid', gap: '2rem' }}>
+                              
+                              {/* Clinical Summary */}
+                              <div style={{ background: 'rgba(77, 163, 255, 0.03)', padding: '2rem', borderRadius: '20px', border: '1px solid rgba(77, 163, 255, 0.1)' }}>
+                                <h4 style={{ color: '#4DA3FF', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1rem', fontSize: '1.1rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                  <CheckCircle2 className="w-5 h-5" /> Clinical Summary
+                                </h4>
+                                <p style={{ fontSize: '1.05rem', lineHeight: '1.7', color: '#E6EDF3', opacity: 0.9 }}>{report.summary}</p>
+                              </div>
+
+                              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '2rem' }}>
+                                {/* Biomarkers */}
+                                <div style={{ background: 'rgba(26, 34, 48, 0.5)', padding: '2rem', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                  <h4 style={{ color: '#00C2A8', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem', fontSize: '1rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    <BrainIcon /> Observed Biomarkers
+                                  </h4>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                    {(report.features || []).map((f, i) => (
+                                      <div key={i} style={{ display: 'flex', gap: '1rem', fontSize: '0.95rem', color: '#9AA4B2' }}>
+                                        <span style={{ color: '#00C2A8' }}>•</span>
+                                        <span>{f}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+
+                                {/* Actions */}
+                                <div style={{ background: 'rgba(26, 34, 48, 0.5)', padding: '2rem', borderRadius: '20px', border: '1px solid rgba(255,255,255,0.05)' }}>
+                                  <h4 style={{ color: '#FFD700', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '1.5rem', fontSize: '1rem', fontWeight: '700', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                    <Upload className="w-5 h-5" style={{ color: '#FFD700' }} /> Clinical Recommendations
+                                  </h4>
+                                  <div style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
+                                    {(report.recommended_action || []).map((a, i) => (
+                                      <div key={i} style={{ display: 'flex', gap: '1rem', fontSize: '0.95rem', color: '#9AA4B2' }}>
+                                        <span style={{ color: '#FFD700' }}>•</span>
+                                        <span>{a}</span>
+                                      </div>
+                                    ))}
+                                  </div>
+                                </div>
+                              </div>
+
+                              {/* Risk Assessment */}
+                              <div style={{ background: 'rgba(245, 158, 11, 0.03)', padding: '1.5rem 2rem', borderRadius: '20px', border: '1px solid rgba(245, 158, 11, 0.1)' }}>
+                                <h4 style={{ color: '#F59E0B', display: 'flex', alignItems: 'center', gap: '0.75rem', marginBottom: '0.75rem', fontSize: '0.9rem', fontWeight: '700', textTransform: 'uppercase' }}>
+                                  ⚠️ Severity Analysis
+                                </h4>
+                                <p style={{ fontSize: '0.95rem', lineHeight: '1.6', color: '#9AA4B2' }}>{report.risk_assessment}</p>
+                              </div>
+
+                            </div>
+                          </div>
+                        </div>
+                      )}
+                    </div>
                   )}
                 </div>
               )}
@@ -446,35 +738,66 @@ Generated by OcuSight AI — Virat Dhama
       {/* ================== PATIENTS PAGE ================== */}
       {page === 'patients' && (
         <div className="main-content">
-          <div className="page-header">
-            <h2 className="page-title">Patient Scan History</h2>
-            <p className="page-sub">Historical diagnostic data and scan records.</p>
+          <div className="page-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
+            <div>
+              <h2 className="page-title" style={{ fontSize: '2rem', fontWeight: 800 }}>Patient Directory</h2>
+              <p className="page-sub" style={{ color: '#9AA4B2' }}>Historical diagnostic data and chronological risk tracking.</p>
+            </div>
+            <div style={{ display: 'flex', gap: '10px' }}>
+              <select
+                style={{ background: '#1A2230', color: 'white', padding: '10px 16px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.1)' }}
+                onChange={(e) => fetchScans(e.target.value)}
+              >
+                {dbPatients.length === 0 && <option>No patients found</option>}
+                {dbPatients.map(p => (
+                  <option key={p.id} value={p.id}>{p.name} (Age: {p.age})</option>
+                ))}
+              </select>
+            </div>
           </div>
-          <div className="patients-table-wrap">
-            <table className="patients-table">
-              <thead>
-                <tr>
-                  <th>Patient</th>
-                  <th>Date</th>
-                  <th>Diagnosis</th>
-                  <th>Risk</th>
-                  <th>Confidence</th>
-                </tr>
-              </thead>
-              <tbody>
-                {result ? (
-                  <tr>
-                    <td><div className="patient-name"><div className="patient-avatar">P1</div>Current Scan</div></td>
-                    <td>{new Date().toLocaleDateString()}</td>
-                    <td><span className="badge badge-blue">{result.diagnosis}</span></td>
-                    <td><span className="risk-dot" style={{ background: getSeverity().color }} />{getSeverity().stage}</td>
-                    <td>{result.confidence}%</td>
-                  </tr>
+
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 2fr', gap: '24px' }}>
+            {/* Timeline Details */}
+            <div className="patients-table-wrap" style={{ background: 'rgba(26, 34, 48, 0.7)', borderRadius: '16px', padding: '24px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <h3 style={{ marginBottom: '16px', color: '#00C2A8' }}>Progression Timeline</h3>
+              {dbScans.length === 0 ? (
+                <p style={{ color: '#6B7280', fontSize: '0.9rem' }}>No scans available for this patient.</p>
+              ) : (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
+                  {dbScans.map((s, i) => (
+                    <div key={i} style={{ borderLeft: '2px solid #4DA3FF', paddingLeft: '16px', position: 'relative' }}>
+                      <div style={{ position: 'absolute', left: '-6px', top: '4px', width: '10px', height: '10px', borderRadius: '50%', background: '#4DA3FF' }}></div>
+                      <div style={{ fontSize: '0.8rem', color: '#9AA4B2', marginBottom: '4px' }}>{new Date(s.scan_date).toLocaleString()}</div>
+                      <div style={{ fontWeight: 600, color: 'white', marginBottom: '4px' }}>{s.diagnosis}</div>
+                      <div style={{ fontSize: '0.8rem', color: s.risk_score > 70 ? '#FF4D4F' : '#00C2A8' }}>Risk Index: {s.risk_score}% (Conf: {s.confidence}%)</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Recharts Graph */}
+            <div style={{ background: 'rgba(26, 34, 48, 0.7)', borderRadius: '16px', padding: '24px', border: '1px solid rgba(255,255,255,0.05)' }}>
+              <h3 style={{ marginBottom: '24px', color: '#4DA3FF' }}>Risk Severity Trajectory</h3>
+              <div style={{ width: '100%', height: '300px' }}>
+                {dbScans.length > 0 ? (
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={dbScans.map(s => ({ date: new Date(s.scan_date).toLocaleDateString(), Risk: s.risk_score }))}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="rgba(255,255,255,0.05)" />
+                      <XAxis dataKey="date" stroke="#9AA4B2" fontSize={12} />
+                      <YAxis domain={[0, 100]} stroke="#9AA4B2" fontSize={12} />
+                      <Tooltip
+                        contentStyle={{ background: '#111827', border: '1px solid rgba(77,163,255,0.2)', borderRadius: '8px' }}
+                        itemStyle={{ color: '#00C2A8', fontWeight: 'bold' }}
+                      />
+                      <Line type="monotone" dataKey="Risk" stroke="#00C2A8" strokeWidth={3} dot={{ r: 6, fill: '#00C2A8' }} activeDot={{ r: 8, fill: '#FFD700' }} />
+                    </LineChart>
+                  </ResponsiveContainer>
                 ) : (
-                  <tr><td colSpan="5" className="empty-table">No scans yet. Upload an eye scan from the Home page to get started.</td></tr>
+                  <p style={{ color: '#6B7280', textAlign: 'center', marginTop: '100px' }}>Need at least 1 scan to generate trajectory chart.</p>
                 )}
-              </tbody>
-            </table>
+              </div>
+            </div>
           </div>
         </div>
       )}
@@ -513,15 +836,6 @@ Generated by OcuSight AI — Virat Dhama
               <p>For any medical concerns or treatment decisions, consultation with a qualified <strong>ophthalmologist or healthcare professional</strong> is recommended.</p>
             </div>
 
-            <h3>Technology Behind the System</h3>
-            <div className="tech-grid">
-              <div className="tech-item"><span className="tech-label">Deep Learning Model</span><span className="tech-value">EfficientNet-B0</span></div>
-              <div className="tech-item"><span className="tech-label">Framework</span><span className="tech-value">PyTorch</span></div>
-              <div className="tech-item"><span className="tech-label">Explainability</span><span className="tech-value">GradCAM</span></div>
-              <div className="tech-item"><span className="tech-label">AI Reports</span><span className="tech-value">Vision-Language Model (LLaVA)</span></div>
-              <div className="tech-item"><span className="tech-label">Frontend</span><span className="tech-value">React</span></div>
-              <div className="tech-item"><span className="tech-label">Backend</span><span className="tech-value">FastAPI + Python</span></div>
-            </div>
 
             <h3>About the Developer</h3>
             <div className="dev-card">
@@ -555,6 +869,46 @@ Generated by OcuSight AI — Virat Dhama
                 </div>
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* ================== MODALS & TOASTS ================== */}
+      {showSaveModal && (
+        <div className="zoom-modal" onClick={() => setShowSaveModal(false)}>
+          <div style={{ background: '#1A2230', padding: '30px', borderRadius: '16px', border: '1px solid rgba(77,163,255,0.3)', width: '400px' }} onClick={e => e.stopPropagation()}>
+            <h3 style={{ marginBottom: '20px', color: '#4DA3FF' }}>Save to Patient DB</h3>
+
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '16px', marginBottom: '24px' }}>
+              <div>
+                <label style={{ fontSize: '0.8rem', color: '#9AA4B2', marginBottom: '6px', display: 'block' }}>Patient Name</label>
+                <input
+                  type="text"
+                  value={patientNameInput}
+                  onChange={e => setPatientNameInput(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', background: '#0B0F14', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }}
+                  placeholder="e.g. John Doe"
+                />
+              </div>
+              <div>
+                <label style={{ fontSize: '0.8rem', color: '#9AA4B2', marginBottom: '6px', display: 'block' }}>Age</label>
+                <input
+                  type="number"
+                  value={patientAgeInput}
+                  onChange={e => setPatientAgeInput(e.target.value)}
+                  style={{ width: '100%', padding: '10px 14px', borderRadius: '8px', background: '#0B0F14', border: '1px solid rgba(255,255,255,0.1)', color: 'white' }}
+                  placeholder="e.g. 52"
+                />
+              </div>
+            </div>
+
+            <button
+              className="report-btn"
+              onClick={handleSaveToPatient}
+              disabled={savingPatient || !patientNameInput || !patientAgeInput}
+            >
+              {savingPatient ? 'Saving...' : '💾 Save Record'}
+            </button>
           </div>
         </div>
       )}

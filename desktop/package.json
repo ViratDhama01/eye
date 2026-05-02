@@ -1,0 +1,78 @@
+{
+  "name": "ocusight-ai",
+  "version": "1.0.0",
+  "description": "OcuSight AI — Advanced Retinal Disease Detection",
+  "main": "main.js",
+  "author": "Virat Dhama",
+  "license": "MIT",
+  "scripts": {
+    "start": "electron .",
+    "build:mac": "electron-builder --mac",
+    "build:win": "electron-builder --win"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^25.1.8"
+  },
+  "build": {
+    "appId": "com.viratdhama.ocusight-ai",
+    "productName": "OcuSight AI",
+    "directories": {
+      "output": "../dist-electron"
+    },
+    "extraResources": [
+      {
+        "from": "../frontend/dist",
+        "to": "frontend-dist",
+        "filter": ["**/*"]
+      },
+      {
+        "from": "../backend-dist",
+        "to": "backend-dist/ocusight-backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "mac": {
+      "category": "public.app-category.medical",
+      "icon": "../frontend/public/ocusight-logo.png",
+      "target": [
+        {
+          "target": "dmg",
+          "arch": ["arm64"]
+        }
+      ],
+      "hardenedRuntime": false,
+      "gatekeeperAssess": false
+    },
+    "dmg": {
+      "title": "OcuSight AI",
+      "contents": [
+        { "x": 130, "y": 220 },
+        { "x": 410, "y": 220, "type": "link", "path": "/Applications" }
+      ]
+    },
+    "win": {
+      "icon": "../frontend/public/ocusight-logo.png",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false,
+      "installerIcon": "../frontend/public/ocusight-logo.png",
+      "uninstallerIcon": "../frontend/public/ocusight-logo.png",
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true
+    },
+    "files": [
+      "main.js",
+      "package.json"
+    ],
+    "asar": true,
+    "asarUnpack": []
+  }
+}
