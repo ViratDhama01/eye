@@ -4,6 +4,10 @@
   "description": "OcuSight AI — Advanced Retinal Disease Detection",
   "main": "main.js",
   "author": "Virat Dhama",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ViratDhama01/eye.git"
+  },
   "license": "MIT",
   "scripts": {
     "start": "electron .",

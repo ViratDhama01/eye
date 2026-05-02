@@ -56,7 +56,7 @@ jobs:
       - name: Build Windows installer
         run: |
           cd desktop
-          npx electron-builder --win --x64
+          npx electron-builder --win --x64 --publish never
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
